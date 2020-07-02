@@ -6,7 +6,7 @@ Driver::Driver(){
 
 void Driver::clockRising(){
     //Clocks the processor
-    this->processor->clockRising(&this->addrBus, &this->dataBus, &this->controlBus);
+    if (!this->processor->CR.halt) this->processor->clockRising(&this->addrBus, &this->dataBus, &this->controlBus);
     //Loops through all of the devices and performs a clock rising
     Device* currentDevice = this->devices;
     while (currentDevice != nullptr){
@@ -17,7 +17,7 @@ void Driver::clockRising(){
 }
 void Driver::clockHigh(){
     //Clocks the processor
-    this->processor->clockHigh();
+    if (!this->processor->CR.halt) this->processor->clockHigh();
     //Loops through all of the devices and performs a clock high
     Device* currentDevice = this->devices;
     while (currentDevice != nullptr){
@@ -35,7 +35,7 @@ void Driver::clockFalling(){
         currentDevice = currentDevice->nextDevice;
     }
     //Clocks the processor
-    this->processor->clockFalling(&this->addrBus, &this->dataBus, &this->controlBus);
+    if (!this->processor->CR.halt) this->processor->clockFalling(&this->addrBus, &this->dataBus, &this->controlBus);
 }
 
 void Driver::clock(){

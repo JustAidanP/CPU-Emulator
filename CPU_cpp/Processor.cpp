@@ -9,46 +9,52 @@ Processor::Processor(){
 void Processor::ALU(word base, word modifier, byte operation, word* output){
     word result = 0;
     //Decodes the operation
-    if (operation & 0x8) {  //Bitwise
-        if (operation & 0x4) {  //Gates
-            if (operation & 0x2) { //Or / XOr
-                if (operation & 0x1)    result = base ^ modifier; //XOr
+    if (operation & 0x40) {  //Bitwise
+        if (operation & 0x20) {  //Gates
+            if (operation & 0x10) { //Or / XOr
+                if (operation & 0x8)    result = base ^ modifier; //XOr
                 else                    result = base | modifier; //Or
             }
             else{  //And / Not
-                if (operation & 0x1)    result = ~base;           //Not
+                if (operation & 0x8)    result = ~base;           //Not
                 else                    result = base & modifier; //And
             }
         }
         else{   //Shifts
-            if (operation & 0x2) { //Rot
-                if (operation & 0x1)    result = base ^ modifier; //XOr
-                else                    result = base | modifier; //Or
+            if (operation & 0x10) { //Rot
+                // Checks the first special bit for the direction
+                if (operation & 0x4)    result = (base >> modifier) | (base << (32 - modifier)); //XOr
+                else                    result = (base << modifier) | (base >> (32 - modifier)); //Rotate Right
             }
             else{  //Shift
-                if (operation & 0x1)    result = base >> modifier;//Shift Right
+            // Checks the first special bit for the direction
+                if (operation & 0x4)    result = base >> modifier;//Shift Right
                 else                    result = base << modifier;//Shift Left
             }
         }
     }
     else{   //Mathematical
-        if (operation & 0x4) {  //Mult
-            if (operation & 0x2) { //Div
-                if (!(operation & 0x1)) result = base / modifier; //Div
+        if (operation & 0x20) {  //Mult
+            if (operation & 0x10) { //Div
+                if (!(operation & 0x8)) result = base / modifier; //Div
             }
             else {
-                if (!(operation & 0x1)) result = base * modifier; //Mult
+                if (!(operation & 0x8)) result = base * modifier; //Mult
             }
         }
         else{   //Add / Sub
-            if (operation & 0x2) { //Sub
-                if (operation & 0x1)    result = base - modifier - 1 + this->CR.carryFlag; //Subc
-                else                    result = base - modifier; //Sub
-            }
-            else{  //Add
-                if (operation & 0x1)    result = base + modifier + this->CR.carryFlag;//Addc
-                else                    result = base + modifier;//Add
-                if (result < base) this->CR.carryFlag = 1;  //Sets the carry bit if there was an overflow  
+            if (!(operation & 0x10)) { //Add / Sub
+                if (operation & 0x8){ //Sub
+                    // Checks the first special bit to see if there is a carry
+                    if (operation & 0x4)    result = base - modifier - 1 + this->CR.carryFlag; //Subc
+                    else                    result = base - modifier; //Sub
+                }
+                else{ //Add
+                    // Checks the first special bit to see if there is a carry
+                    if (operation & 0x4)    result = base + modifier + this->CR.carryFlag;//Addc
+                    else                    result = base + modifier;//Add
+                    if (result < base) this->CR.carryFlag = 1;  //Sets the carry bit if there was an overflow
+                }
             }
         }
     }
@@ -60,10 +66,10 @@ void Processor::ALU(word base, word modifier, byte operation, word* output){
 
 void Processor::FPU(word base, word modifier, byte operation, word* output){
     float result = 0;
-    if (operation ^ 0x10)      result = *(float*)&base + *(float*)&modifier;    //Add
-    else if (operation ^ 0x12) result = *(float*)&base - *(float*)&modifier;    //Sub
-    else if (operation ^ 0x14) result = *(float*)&base * *(float*)&modifier;    //Mult
-    else if (operation ^ 0x16) result = *(float*)&base / *(float*)&modifier;    //Div
+    if ((operation >> 3) ^ 0x10)      result = *(float*)&base + *(float*)&modifier;    //Add
+    else if ((operation >> 3) ^ 0x12) result = *(float*)&base - *(float*)&modifier;    //Sub
+    else if ((operation >> 3) ^ 0x14) result = *(float*)&base * *(float*)&modifier;    //Mult
+    else if ((operation >> 3) ^ 0x16) result = *(float*)&base / *(float*)&modifier;    //Div
     *output = *(word*)&result;
 }
 
@@ -111,10 +117,12 @@ bool Processor::ADU(byte addrMode, word operand, word* addr, bool fullSize){
 
 void Processor::clockRising(word* _addrBus, word* _dataBus, ControlBus* _controlBus){
     this->MAR = *this->PC;  //Move the program counter value to the mar     - First Move
+    this->CR.dataSize = 0b00; //Sets the datasize to a full word
+    //Extracts the datasize from the databus
     this->MDR = *_dataBus;  //Moves the data bus value into the mdr
     if (this->CR.stall) return; //The instruction has requested this cycle and so don't execute anything
-    this->CIR = *(Instruction*)&this->MDR;  //Moves the mdr to the cir
-    (*this->PC) += sizeof(Instruction);    //Increments the program counter
+    this->CIR = *(instruction*)&this->MDR;  //Moves the mdr to the cir
+    (*this->PC) += sizeof(instruction);    //Increments the program counter
     this->MAR = *this->PC;  //Move the program counter value to the mar     - Second Move
 }
 
@@ -122,38 +130,51 @@ void Processor::clockHigh(){
     //If the instruction is 0, then it is invalid so skip clockHigh
     if (*(word*)&this->CIR == 0) return;
     //! Conditions checks
+    // Gets the required field bits
+    byte fieldBits = EXTRACT_FIELD_BITS(this->CIR);
+    // Gets the processor's field bits
+    byte controlBits = this->CR.carryFlag << 3 | this->CR.zeroFlag << 2 | this->CR.negativeFlag << 1 | this->CR.signedOverflowFlag;
+    // If the first bit is set, then the operator is and otherwise xor
+    byte fieldState = (fieldBits & 0x80) ? (fieldBits & 0xF) & controlBits : (fieldBits & 0xF) ^ controlBits;
+    // If the second bit is set, then the fieldState can't be 0
+    bool conditionsMet = (fieldBits & 0x40) ? fieldState : !fieldState;
+    if (!conditionsMet) return;
+
     // Checks if the instruction is an operator
-    if (this->CIR.instructionBroad & 0x10) {
-        byte Rout = (this->CIR.rightHalf & 0xF000) >> 12; //Extracts the output register
-        byte Rin  = (this->CIR.rightHalf & 0xF00)  >> 8;  //Extracts the input register
+    if (EXTRACT_INS_BROAD(this->CIR) & 0x10) {
+        byte Rout = (EXTRACT_OPERAND(this->CIR) & 0xF000) >> 12; //Extracts the output register
+        byte Rin  = (EXTRACT_OPERAND(this->CIR) & 0xF00)  >> 8;  //Extracts the input register
         word base = this->registers[Rin];           //Gets the base value from the register
         word modifier = 0;
         //Gets the modifier of the operation, i.e. the second value. Only if the operation isn't not
-        if (this->CIR.instructionBroad != 0x1F) {
-            if (this->CIR.instructionSpecific & 0x1) modifier = this->CIR.rightHalf & 0xFF;   // Modifier is operand value
-            else modifier = this->registers[((this->CIR.rightHalf & 0xF0) >> 4)];        // Modifier is value in register
+        if (EXTRACT_INS_BROAD(this->CIR) != 0x1F) {
+            if (EXTRACT_INS_SPEC(this->CIR) & 0x1) modifier = EXTRACT_OPERAND(this->CIR) & 0xFF;   // Modifier is operand value
+            else modifier = this->registers[((EXTRACT_OPERAND(this->CIR) & 0xF0) >> 4)];        // Modifier is value in register
         }
 
         word result;
         //Checks if the operation is ALU or FPU and executes the instruction
-        if (this->CIR.instructionSpecific & 0x4) this->FPU(base, modifier, this->CIR.instructionBroad, &result);
-        else this->ALU(base, modifier, this->CIR.instructionBroad, &result);
+        //The operation is the combination of the broad and specific instruction part
+        if (EXTRACT_INS_SPEC(this->CIR) & 0x2) this->FPU(base, modifier, (EXTRACT_INS_BROAD(this->CIR) << 3) | EXTRACT_INS_SPEC(this->CIR), &result);
+        else this->ALU(base, modifier, (EXTRACT_INS_BROAD(this->CIR) << 3) | EXTRACT_INS_SPEC(this->CIR), &result);
         //Stores the result in the Rout register
         this->registers[Rout] = result;
         // Resets flags
         this->CR.rwFlag = 0;
     }
     else{ //Register Manipulation
-        if (this->CIR.instructionBroad & 0x8) { // Store / Load
-            byte Rbase = (this->CIR.rightHalf & 0xF000) >> 12; //Extracts the output register
-            if (this->CIR.instructionBroad & 0x4) { // Load
+        if (EXTRACT_INS_BROAD(this->CIR) & 0x8) { // Store / Load
+            byte Rbase = (EXTRACT_OPERAND(this->CIR) & 0xF000) >> 12; //Extracts the output register
+            if (EXTRACT_INS_BROAD(this->CIR) & 0x4) { // Load
                 if (this->CR.tickCounter < 3){  // The address is being retrieved
                     // Gets the address, setting fullsize to false as the Address section is only 12 bits
                     word addr;
                     //If the ADR returns true, the address has been retrieved, otherwise, it is waiting
-                    if (this->ADU(this->CIR.addrMode, this->CIR.rightHalf & 0xFFF, &addr, false)){
+                    if (this->ADU(EXTRACT_ADDR_MODE(this->CIR), EXTRACT_OPERAND(this->CIR) & 0xFFF, &addr, false)){
                         //Stores the address in the mdr
                         this->MAR = addr;
+                        //Sets the datasize in the cr
+                        this->CR.dataSize = EXTRACT_INS_SPEC(this->CIR) >> 1;   //The datasize is the first 2 bits
                         //Sets flags
                         this->CR.rwFlag = 0;
                         this->CR.tickCounter = 3;
@@ -172,9 +193,11 @@ void Processor::clockHigh(){
                     // Gets the address, setting fullsize to false as the Address section is only 12 bits
                     word addr;
                     //If the ADR returns true, the address has been retrieved, otherwise, it is waiting
-                    if (this->ADU(this->CIR.addrMode, this->CIR.rightHalf & 0xFFF, &addr, false)){
+                    if (this->ADU(EXTRACT_ADDR_MODE(this->CIR), EXTRACT_OPERAND(this->CIR) & 0xFFF, &addr, false)){
                         //Stores the address in the mdr
                         this->MAR = addr;
+                        //Sets the datasize in the cr
+                        this->CR.dataSize = EXTRACT_INS_SPEC(this->CIR) >> 1;   //The datasize is the first 2 bits
                         this->MDR = this->registers[Rbase]; //Stores the register into the mdr
                         //Sets flags
                         this->CR.rwFlag = 1;
@@ -182,42 +205,45 @@ void Processor::clockHigh(){
                         this->CR.stall = 1;
                     }
                 }
-                else if (this->CR.tickCounter == 3) this->CR.tickCounter = 4;   //Waits another clock cycle as the data is being stored in memory
+                else if (this->CR.tickCounter == 3){
+                    this->CR.rwFlag = 0;
+                    this->CR.tickCounter = 4;   //Waits another clock cycle as the data is being stored in memory
+                }
                 else if (this->CR.tickCounter == 4){
                     this->CR.tickCounter = 0;
-                    this->CR.rwFlag = 0;
-                    this->CR.stall = 1;
+                    this->CR.stall = 0;
                 }
             }
         }
         else{ // Jumps / Move
-            if (this->CIR.instructionBroad & 0x4){ // Mov
-                if (this->CIR.instructionBroad & 0x2) { // Other
-                    if (!(this->CIR.instructionBroad & 0x1)) { // Clear
-                        byte Rout = (this->CIR.rightHalf >> 12) & 0xF; //Extracts the output register
+            if (EXTRACT_INS_BROAD(this->CIR) & 0x4){ // Mov
+                if (EXTRACT_INS_BROAD(this->CIR) & 0x2) { // Other
+                    if (EXTRACT_INS_BROAD(this->CIR) & 0x1) this->CR.halt = 1;  // Halt
+                    else{ // Clear
+                        byte Rout = (EXTRACT_OPERAND(this->CIR) >> 12) & 0xF; //Extracts the output register
                         this->registers[Rout] = 0;
                     }
                 }
                 else{ // Mov
-                    byte Rout = (this->CIR.rightHalf >> 12) & 0xF; //Extracts the output register
-                    if (this->CIR.instructionBroad & 0x1) { // Register move
-                        byte Rin = (this->CIR.rightHalf >> 8) & 0xF; //Extracts the input register
-                        this->registers[Rout] = this->registers[Rin];
+                    byte Rout = (EXTRACT_OPERAND(this->CIR) >> 12) & 0xF; //Extracts the output register
+                    if (EXTRACT_INS_SPEC(this->CIR) & 0x1) { // Value move
+                        this->registers[Rout] = EXTRACT_OPERAND(this->CIR) & 0xFFF;
                     }
-                    else{ // Value move
-                        this->registers[Rout] = this->CIR.rightHalf & 0xFFF;
+                    else{ // Register move
+                        byte Rin = (EXTRACT_OPERAND(this->CIR) >> 8) & 0xF; //Extracts the input register
+                        this->registers[Rout] = this->registers[Rin];
                     }
                 }
             }
             else{ // Jumps
-                if (this->CIR.instructionBroad & 0x2){ // Jump
+                if (EXTRACT_INS_BROAD(this->CIR) & 0x2){ // Jump
                     if (this->CR.tickCounter < 3){  // The address is being retireved
                         // Gets the address, setting fullsize based on the last bit, if it is off, then a register isn't used and so a full address is used
                         word addr;
                         //If the ADR returns true, the address has been retrieved, otherwise, it is waiting
-                        if (this->ADU(this->CIR.addrMode, this->CIR.rightHalf & 0xFFF, &addr, (this->CIR.instructionBroad & 0x1) ? false : true)){
-                            if (this->CIR.instructionBroad & 0x1){ // Stores the last address in a register if a register is given
-                                this->registers[(this->CIR.rightHalf >> 12) & 0xF] = *this->PC;
+                        if (this->ADU(EXTRACT_ADDR_MODE(this->CIR), EXTRACT_OPERAND(this->CIR) & 0xFFF, &addr, (EXTRACT_INS_BROAD(this->CIR) & 0x1) ? false : true)){
+                            if (EXTRACT_INS_BROAD(this->CIR) & 0x1){ // Stores the last address in a register if a register is given
+                                this->registers[(EXTRACT_OPERAND(this->CIR) >> 12) & 0xF] = *this->PC;
                             }
                             *this->PC = addr;   //Sets the PC to the address
                             this->MAR = addr;   //Sets the MAR to the address
@@ -229,6 +255,9 @@ void Processor::clockHigh(){
                         }
                     }
                     else if (this->CR.tickCounter == 3){    //During the cycle, the next instruction is being retrieved
+                        //Manually increments the program counter so that the instructions get fetched as usual
+                        *this->PC = *this->PC + sizeof(instruction);
+                        this->MAR = *this->PC;
                         this->CR.tickCounter = 0;
                         this->CR.stall = 0;
                     }

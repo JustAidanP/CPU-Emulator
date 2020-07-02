@@ -1,9 +1,9 @@
 #include <cstdint>
-#define EXTRACT_FIELD_BITS(x) (x >> 26) && 0x3F
-#define EXTRACT_ADDR_MODE(x) (x >> 24) & 0x3
-#define EXTRACT_INS_BROAD(x) (x >> 19) & 0x1F
-#define EXTRACT_INS_SPEC(x) (x >> 16) & 0x7
-#define EXTRACT_OPERAND(x) x & 0xFF
+#define EXTRACT_FIELD_BITS(x) ((x >> 26) & 0x3F)
+#define EXTRACT_INS_BROAD(x) ((x >> 21) & 0x1F)
+#define EXTRACT_INS_SPEC(x) ((x >> 18) & 0x7)
+#define EXTRACT_ADDR_MODE(x) ((x >> 16) & 0x3)
+#define EXTRACT_OPERAND(x) (x & 0xFFFFFFFF)
 
 typedef uint32_t word;
 typedef word instruction;
@@ -18,40 +18,23 @@ struct ControlRegister{
 
     //! These flags are placed onto the control bus on clockFalling
     byte rwFlag : 1;        //Read / Write              0 / 1
+    byte dataSize : 2;      //Controls the word length that is being request or stored  00 - Word, 01 - Three Quarters, 10 - Half, 11 - Quarter
 
     byte stall : 1;         // Whether an instruction has requested the next cpu cycle
+    byte halt : 1;          // Whether the processor is halted, ALL execution of the processor stops until it is manually undone
     byte tickCounter : 6;   // Stores a counter determining the stage that an instruction is at
-};
-
-struct Instruction{
-    //!The fields are ordered so that the bits get fitted into whole bytes and there are no overflows
-    //Field comparison bits
-    byte xa : 1;    // XOr / And    0 / 1   - Determines comparison used for field bits
-    byte zn : 1;    // Zero / Not   0 / 1   - Determines whether the comparison result should be zero
-    byte carryFlag : 1;
-    byte zeroFlag : 1;
-    byte negativeFlag : 1;
-    byte signedOverflowFlag : 1;
-    //Addressing mode
-    byte addrMode : 2;
-
-    //Instruction definition
-    byte instructionBroad : 5;
-    byte instructionSpecific : 3;
-
-    //Right Half Word
-    word rightHalf : 16;
 };
 
 struct ControlBus{
     byte rwFlag : 1;
+    byte dataSize : 2;
 };
 
 class Processor{
 public:
     word MAR;
     word MDR;
-    Instruction CIR;
+    instruction CIR;
     ControlRegister CR;
     word registers[16] = { 0 };
     word* PC;
